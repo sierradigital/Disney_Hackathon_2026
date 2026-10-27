@@ -73,7 +73,7 @@ resources:
       service-plan: application
       path: ./xs-security.json
       config:
-        xsappname: zmaxx-f2548-ext-${org}-${space}
+        xsappname: zmaxx-f2548-ext-dis-build-fi-dev
         tenant-mode: dedicated
         oauth2-configuration:
           credential-types:
