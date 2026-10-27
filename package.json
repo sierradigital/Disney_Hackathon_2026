@@ -28,7 +28,10 @@
         "allowPosting": true
       },
       "ai": {
-        "enabled": false,
+        "enabled": true,
+        "destination": "GENAICORE",
+        "deploymentId": "",
+        "resourceGroup": "default",
         "model": "gpt-4o-mini"
       }
     },

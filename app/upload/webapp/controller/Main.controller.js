@@ -318,10 +318,17 @@ sap.ui.define([
     },
 
     async onExplain(e) {
-      const ctx = e.getSource().getBindingContext('ui')
+      const button = e.getSource()
+      const ctx = button.getBindingContext('ui')
       const msg = ctx.getObject()
-      const r = await this.request('POST', `${SRV}/Messages(${msg.ID})/ZmaxxService.explain`, {})
-      this.ui.setProperty(ctx.getPath() + '/aiExplanation', r.aiExplanation)
+      // The AI answer takes a few seconds
+      button.setBusyIndicatorDelay(0).setBusy(true)
+      try {
+        const r = await this.request('POST', `${SRV}/Messages(${msg.ID})/ZmaxxService.explain`, {})
+        this.ui.setProperty(ctx.getPath() + '/aiExplanation', r.aiExplanation)
+      } finally {
+        button.setBusy(false)
+      }
     },
 
     onDownloadReport() { return this.download('errorReport') },

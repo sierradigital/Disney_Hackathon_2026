@@ -1,10 +1,13 @@
 // Plain-language explanation and suggested fix for an error (Gap 6, AI option).
 //
-// With cds.env.zmaxx.ai.enabled and an SAP AI Core binding, the message is sent to
-// Generative AI Hub through @sap-ai-sdk/orchestration (install it to use this path).
+// With cds.env.zmaxx.ai.enabled, the message is sent to an SAP AI Core deployment through the
+// BTP destination cds.zmaxx.ai.destination (GENAICORE: OAuth2ClientCredentials with the AI Core
+// service key, URL = AI_API_URL). The deployment is looked up once to see how to call it:
+// an orchestration deployment, or a foundation model (OpenAI GPT or Anthropic Claude).
 // Only the message text, code and field name are sent: no amounts, accounts or names.
-// Without AI, a built-in explanation per message code is returned so the demo always works.
+// Without AI, or when the call fails, a built-in explanation per message code is returned.
 import cds from '@sap/cds'
+import { executeHttpRequest } from '@sap-cloud-sdk/http-client'
 
 const LOG = cds.log('zmaxx-ai')
 
@@ -39,27 +42,79 @@ const FIXES = {
 export async function explain(message) {
   if (cds.env.zmaxx?.ai?.enabled) {
     try {
-      return await explainWithGenAI(message)
+      const text = (await explainWithAICore(message))?.trim()
+      if (text) return text.slice(0, 2000)
     } catch (e) {
-      LOG.warn('Generative AI Hub call failed, using built-in explanation:', e.message)
+      LOG.warn('SAP AI Core call failed, using built-in explanation:', e.response?.status ?? '', e.response?.data?.error?.message ?? e.response?.data?.message ?? e.message)
     }
   }
   return FIXES[message.code] ?? `What it means: ${message.text} How to fix it: correct the ${message.field || 'value'} on line ${message.lineNo} and upload the file again.`
 }
 
-async function explainWithGenAI(message) {
-  const sdk = '@sap-ai-sdk/orchestration' // optional dependency
-  const { OrchestrationClient } = await import(sdk)
-  const client = new OrchestrationClient({
-    llm: { model_name: cds.env.zmaxx.ai.model },
-    templating: {
-      template: [
-        { role: 'system', content: 'You help finance users fix journal entry upload errors in SAP. Answer in two short sentences: what the error means, then exactly how to fix it in the spreadsheet. No jargon.' },
-        { role: 'user', content: 'Error code: {{?code}}\nField: {{?field}}\nMessage: {{?text}}' }
-      ]
-    }
-  })
-  const res = await client.chatCompletion({ inputParams: { code: message.code ?? '', field: message.field ?? '', text: message.text ?? '' } })
-  return res.getContent()
+const SYSTEM = 'You help finance users fix errors in a journal entry upload file (Excel) before it is posted to SAP S/4HANA ' +
+  'with the Upload General Journal Entries app (F2548). The file has 1-Currency format (transaction currency only; SAP ' +
+  'calculates local and group currency) or 3-Currency format (the user also enters local currency, type 10, and group ' +
+  'currency USD, type 30). Answer in two or three short sentences, plain text: what the error means, then exactly what to ' +
+  'change in the spreadsheet. No jargon, no markdown.'
+
+const userPrompt = m => [
+  `Error code: ${m.code ?? ''}`,
+  `Field: ${m.field ?? ''}`,
+  `Line: ${m.lineNo > 0 ? m.lineNo : 'whole file'}`,
+  `Message: ${m.text ?? ''}`,
+  FIXES[m.code] && `Known guidance for this code: ${FIXES[m.code]}`
+].filter(Boolean).join('\n')
+
+async function explainWithAICore(message) {
+  const ai = cds.env.zmaxx.ai
+  const deploymentId = ai.deploymentId || process.env.AICORE_DEPLOYMENT_ID
+  if (!deploymentId) throw new Error('No AI Core deployment ID: set cds.zmaxx.ai.deploymentId')
+  const call = (method, url, data) => executeHttpRequest(
+    { destinationName: ai.destination || process.env.AICORE_DESTINATION_NAME || 'GENAICORE' },
+    { method, url, data, timeout: 30000, headers: { 'AI-Resource-Group': ai.resourceGroup || process.env.AICORE_RESOURCE_GROUP || 'default', 'Content-Type': 'application/json' } },
+    { fetchCsrfToken: false }
+  )
+  const { scenario, model } = await deploymentInfo(call, deploymentId)
+  const base = `/v2/inference/deployments/${deploymentId}`
+  const prompt = userPrompt(message)
+
+  if (scenario === 'orchestration') {
+    const res = await call('post', `${base}/completion`, {
+      orchestration_config: {
+        module_configurations: {
+          templating_module_config: { template: [{ role: 'system', content: SYSTEM }, { role: 'user', content: '{{?error}}' }] },
+          llm_module_config: { model_name: ai.model, model_params: { max_tokens: 300, temperature: 0.2 } }
+        }
+      },
+      input_params: { error: prompt }
+    })
+    return res.data?.orchestration_result?.choices?.[0]?.message?.content
+  }
+  if (/^anthropic/.test(model)) {
+    const res = await call('post', `${base}/invoke`, {
+      anthropic_version: 'bedrock-2023-05-31', max_tokens: 300, system: SYSTEM,
+      messages: [{ role: 'user', content: prompt }]
+    })
+    return res.data?.content?.find(c => c.type === 'text')?.text
+  }
+  if (/^(gpt|o\d)/.test(model)) {
+    const res = await call('post', `${base}/chat/completions?api-version=2024-02-01`, {
+      messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }]
+    })
+    return res.data?.choices?.[0]?.message?.content
+  }
+  throw new Error(`AI Core deployment ${deploymentId} runs ${model || scenario}, which this app does not call yet (use orchestration, GPT or Claude)`)
 }
-// 
+
+// Scenario and model of the deployment, read once per process (again after a failure)
+let deployment = null
+function deploymentInfo(call, deploymentId) {
+  deployment ??= call('get', `/v2/lm/deployments/${deploymentId}`).then(({ data }) => {
+    if (data.status && data.status !== 'RUNNING') throw new Error(`AI Core deployment ${deploymentId} is ${data.status}, not RUNNING`)
+    const backend = data.details?.resources?.backend_details ?? data.details?.resources?.backendDetails
+    const info = { scenario: data.scenarioId, model: backend?.model?.name ?? '' }
+    LOG.info(`AI Core deployment ${deploymentId}: scenario ${info.scenario}, model ${info.model || '(set by orchestration)'}`)
+    return info
+  }).catch(e => { deployment = null; throw e })
+  return deployment
+}
