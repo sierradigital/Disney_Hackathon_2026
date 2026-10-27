@@ -4,7 +4,8 @@
 // Entity, field and function names below were checked against the S43 $metadata.
 //
 //   getMasterData()   I_CompanyCode, I_BusinessAreaStdVH, I_GLAccountStdVH, I_CostCenterStdVH,
-//                     I_AccountingDocumentTypeStdVH, I_CurrencyStdVH, VL_SH_FAC_FIN_TRANSACTION_TYPE
+//                     I_AccountingDocumentTypeStdVH, I_CurrencyStdVH (or SAP__Currencies where it is
+//                     missing, as in RD4), VL_SH_FAC_FIN_TRANSACTION_TYPE
 //   checkDocument()   FinsPostingGLHeaders + Items, then Simulate (cds.zmaxx.s43.sapCheck); nothing is saved
 //   createJournal()   FinsPostingGLHeaders + Items, then Post or ParkAsComplete (cds.zmaxx.s43.allowPosting)
 //   attachFile()      API_CV_ATTACHMENT_SRV/AttachmentContentSet, business object BKPF
@@ -34,7 +35,7 @@ class S4Client {
       })) : [],
       s.getAll(`${F2548}/I_BusinessAreaStdVH`, { $select: 'BusinessArea' }),
       s.getAll(`${F2548}/I_AccountingDocumentTypeStdVH`, { $select: 'AccountingDocumentType' }),
-      s.getAll(`${F2548}/I_CurrencyStdVH`, { $select: 'Currency' }),
+      readCurrencies(s),
       s.getAll(`${F2548}/VL_SH_FAC_FIN_TRANSACTION_TYPE`, { $select: 'TRTYP,TXT' })
     ])
     const companies = new Map(ccs.map(c => [c.CompanyCode, { companyCode: c.CompanyCode, name: c.CompanyCodeName, currency: c.Currency, controllingArea: c.ControllingArea }]))
@@ -75,7 +76,7 @@ class S4Client {
       taxCodes: new Set(taxRows.map(t => `${t.STBUK}|${t.MWSKZ}`)),
       businessAreas: new Set(bas.map(b => b.BusinessArea)),
       documentTypes: new Set(docTypes.map(d => d.AccountingDocumentType)),
-      currencies: new Set(currencies.map(c => c.Currency)),
+      currencies: new Set(currencies),
       transactionTypes: new Map(ttypes.map(t => [t.TRTYP, t.TXT])),
       glAccounts: new Map(glRows.map(g => [`${g.CompanyCode}|${alpha(g.GLAccount)}`, { glAccount: alpha(g.GLAccount), companyCode: g.CompanyCode, accountType: g.GLAccountType, name: g.GLAccount_Text }])),
       costCenters: new Map(ccRows.map(c => [`${c.ControllingArea}|${alpha(c.CostCenter)}`, { validFrom: fromV2Date(c.ValidityStartDate), validTo: fromV2Date(c.ValidityEndDate) }]))
@@ -265,6 +266,23 @@ function sapCode(code) {
 function lineOfTarget(doc, target) {
   const n = Number(String(target ?? '').match(/AccountingDocumentItemRef='?0*(\d+)/)?.[1])
   return n ? doc.lines[n - 1]?.lineNo : null
+}
+
+// Currency codes. Not every release of F2548's service has I_CurrencyStdVH (RD4 answers 404);
+// SAP__Currencies, which Gateway adds to services with currency fields, has the same codes.
+// After the first 404 this process reads SAP__Currencies straight away.
+let currencySet = 'I_CurrencyStdVH'
+async function readCurrencies(s) {
+  if (currencySet === 'I_CurrencyStdVH') {
+    try {
+      return (await s.getAll(`${F2548}/I_CurrencyStdVH`, { $select: 'Currency' })).map(c => c.Currency)
+    } catch (e) {
+      if (e.status !== 404) throw e
+      LOG.info('I_CurrencyStdVH not found in this system, reading currencies from SAP__Currencies')
+      currencySet = 'SAP__Currencies'
+    }
+  }
+  return (await s.getAll(`${F2548}/SAP__Currencies`)).map(c => c.CurrencyCode)
 }
 
 async function inChunks(values, fn) {

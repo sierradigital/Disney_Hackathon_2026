@@ -160,7 +160,7 @@
                 <IconTabFilter key="messages" text="Messages" count="{= ${ui>/messages}.length }" icon="sap-icon://message-popup"
                   iconColor="{= ${ui>/upload/errorCount} > 0 ? 'Negative' : 'Default' }">
                   <Table items="{ui>/messages}" busy="{ui>/resultsBusy}" busyIndicatorDelay="0" growing="true" growingThreshold="25" sticky="ColumnHeaders,HeaderToolbar"
-                    noDataText="No messages. Every line passed the checks.">
+                    noDataText="{= ${ui>/upload/status_code} === 'FAILED' ? 'No messages. The run stopped before the lines were checked; see the steps above.' : 'No messages. Every line passed the checks.' }">
                     <headerToolbar>
                       <OverflowToolbar>
                         <Title text="All messages, by line" level="H4"/>

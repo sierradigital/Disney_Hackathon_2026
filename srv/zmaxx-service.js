@@ -441,7 +441,13 @@ export default class ZmaxxService extends cds.ApplicationService {
   async #fail(ID, stage, e) {
     LOG.error(`${stage} failed for upload ${ID}`, e)
     const db = cds.entities('zmaxx')
-    await UPDATE(db.Uploads, ID).set({ status_code: 'FAILED', progress: 100 })
+    // Also as an error message, so the Messages tab and the error report say why the run stopped
+    await INSERT.into(db.Messages).entries({
+      upload_ID: ID, lineNo: 0, source: 'SYSTEM', severity_code: 'E', code: `${stage.toUpperCase()}_FAILED`,
+      text: `${stage} stopped because of a technical problem${e.status ? ` (HTTP ${e.status})` : ''}: ${e.message}`.slice(0, 500)
+    })
+    const { count } = await SELECT.one.from(db.Messages).columns('count(*) as count').where({ upload_ID: ID, severity_code: 'E' })
+    await UPDATE(db.Uploads, ID).set({ status_code: 'FAILED', progress: 100, errorCount: count })
     await addStep(ID, `${stage} Failed`, String(e.message).slice(0, 250))
   }
 }

@@ -24,3 +24,6 @@ db.sqlite
 
 # local secrets
 .env
+
+# client system metadata and test reads (RD4), keep local
+docs/rd4/
